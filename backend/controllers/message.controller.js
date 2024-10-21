@@ -1,76 +1,69 @@
 import Conversation from "../models/conversation.model.js";
 import Message from "../models/message.model.js";
+import { getReceiverSocketId, io } from "../socket/socket.js";
 
+export const sendMessage = async (req, res) => {
+	try {
+		const { message } = req.body;
+		const { id: receiverId } = req.params;
+		const senderId = req.user._id;
 
-export const sendMessage=async (req,res)=>{
-    try {
-        const{message}=req.body;
-        const{id:receiverId}=req.params;
-        const senderId=req.user._id;//we are able to do this thanks to protectRoute middleware go check it out in middleware folder for understanding
+		let conversation = await Conversation.findOne({
+			participants: { $all: [senderId, receiverId] },
+		});
 
-        let conversation=await Conversation.findOne({
-            participants:{$all:[senderId,receiverId]}, // this is us trying to finad all conversations between these two people
-        })
+		if (!conversation) {
+			conversation = await Conversation.create({
+				participants: [senderId, receiverId],
+			});
+		}
 
-        if(!conversation){
-            conversation=await Conversation.create({
-                participants:[senderId,receiverId],
-                // by default messages is empty array in Conversation schema so no need to create it here
-            })
+		const newMessage = new Message({
+			senderId,
+			receiverId,
+			message,
+		});
 
-        }
+		if (newMessage) {
+			conversation.messages.push(newMessage._id);
+		}
 
-        const newMessage=await new Message({
-            senderid:senderId,
-            receiverid:receiverId,
-            message, 
+		// await conversation.save();
+		// await newMessage.save();
 
-        })
-        //await newMessage.save();
+		// this will run in parallel
+		await Promise.all([conversation.save(), newMessage.save()]);
 
+		// SOCKET IO FUNCTIONALITY WILL GO HERE
+		const receiverSocketId = getReceiverSocketId(receiverId);
+		if (receiverSocketId) {
+			// io.to(<socket_id>).emit() used to send events to specific client
+			io.to(receiverSocketId).emit("newMessage", newMessage);
+		}
 
-        if(newMessage){ // if new message is successfully created then
-            conversation.messages.push(newMessage._id);
-           // await conversation.save();
+		res.status(201).json(newMessage);
+	} catch (error) {
+		console.log("Error in sendMessage controller: ", error.message);
+		res.status(500).json({ error: "Internal server error" });
+	}
+};
 
-        }
-        await Promise.all([newMessage.save(),conversation.save()]); // this will run parallelly hence faster
+export const getMessages = async (req, res) => {
+	try {
+		const { id: userToChatId } = req.params;
+		const senderId = req.user._id;
 
-        res.status(201).json(newMessage);
+		const conversation = await Conversation.findOne({
+			participants: { $all: [senderId, userToChatId] },
+		}).populate("messages"); // NOT REFERENCE BUT ACTUAL MESSAGES
 
+		if (!conversation) return res.status(200).json([]);
 
+		const messages = conversation.messages;
 
-
-        
-    } catch (error) {
-        console.log("error in send message controller",error.message);
-        res.status(500).json({erros:"internal server error"});
-    }
-
-}
-export const getMessages=async(req,res)=>{
-    try {
-        const{id:userToChatId}=req.params;
-        const senderid=req.user._id;
-        const conversation=await Conversation.findOne({
-            participants: { $all: [senderid, userToChatId] }, // this is us trying to finad all conversations between these two people
-        }).populate("messages");//here the data from Conversation database is being fetched it has a message feild which is an reference type(look at the schema) now using populate we can pull the detailes from the db it is refering to when pulling Conversation data this data will be shown under messages field since it is refering to another db.
-
-        if(!conversation){res.status(200).json([]);}
-
-        const messages=conversation.messages;
-        res.status(200).json(messages);
-        
-
-       
-
-
-        
-    } catch (error) {
-        console.log("error in get message controller",error.message);
-        res.status(500).json({erros:"internal server error"});
-        
-        
-    }
-}
-
+		res.status(200).json(messages);
+	} catch (error) {
+		console.log("Error in getMessages controller: ", error.message);
+		res.status(500).json({ error: "Internal server error" });
+	}
+};
